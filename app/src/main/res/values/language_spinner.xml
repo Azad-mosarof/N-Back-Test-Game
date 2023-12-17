@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <array name="game_language">
+        <item>English</item>
+        <item>Bengali</item>
+    </array>
+</resources>

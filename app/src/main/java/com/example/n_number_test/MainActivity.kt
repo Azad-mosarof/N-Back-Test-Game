@@ -4,7 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
-import android.net.Uri
+import android.os.Build
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.os.Environment
@@ -12,11 +12,14 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.widget.Toast
+import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.n_number_test.data.Task
 import com.example.n_number_test.databinding.ActivityMainBinding
 import com.google.gson.Gson
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.GlobalScope
 import org.apache.poi.hssf.usermodel.HSSFWorkbook
 import java.io.File
 import java.io.FileOutputStream
@@ -25,14 +28,17 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.Timer
+import java.util.TimerTask
 import kotlin.concurrent.schedule
+import kotlin.random.Random
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
     var TAG = "MainActivity"
     private lateinit var binding: ActivityMainBinding
 
-    // For Text to Speech
     private var tts: TextToSpeech? = null
     var gameMode = 0
     var changeLangMode: Boolean = false
@@ -44,32 +50,80 @@ class MainActivity : AppCompatActivity() {
     var task_4_attempt = 1
     var flow_Id = ""
     var randomNumberList = mutableListOf<Int>()
-    private lateinit var userName: String
-    private lateinit var backgroundMediaPlayer: MediaPlayer
+
     private lateinit var tapMediaPlayer: MediaPlayer
     private lateinit var successMediaPlayer: MediaPlayer
     private lateinit var failMediaPlayer: MediaPlayer
     private var noOfGamePlayed = 0
 
+    private var noOfBeep = 0
+    private var questionFromBeep = false
+    private var timeFromClick = 0
+
+    private lateinit var userName: String
+    private lateinit var language: String
+    private lateinit var level: String
+
     val gson = Gson()
+
+    override fun onBackPressed() {
+        super.onBackPressed()
+        finish()
+    }
+
+    private fun checkPermissions(context: Context?, permissions: Array<String>) {
+        var requestCode = 0
+        if (context != null) {
+            for (permission in permissions) {
+                if (ActivityCompat.checkSelfPermission(
+                        context,
+                        permission
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    ActivityCompat.requestPermissions(
+                        this, permissions, requestCode
+                    )
+                    requestCode++
+                }
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        backgroundMediaPlayer = MediaPlayer.create(this, R.raw.music1)
-        // Set the volume to 0.5 (50% of the maximum volume)
-        backgroundMediaPlayer.setVolume(0.05f, 0.05f)
-        backgroundMediaPlayer.start()
-        backgroundMediaPlayer.setOnCompletionListener {
-            backgroundMediaPlayer.seekTo(0)
-            backgroundMediaPlayer.start()
-        }
-
-        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE), 1)
+        val permissions = arrayOf(
+            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.RECORD_AUDIO
+        )
+        checkPermissions(this, permissions)
 
         userName = intent.getStringExtra("name").toString().uppercase()
+        language = intent.getStringExtra("language").toString()
+        level = intent.getStringExtra("level").toString()
+
+        when (level) {
+            "Level 1" -> {
+                gameMode = 1
+            }
+            "Level 2" -> {
+                gameMode = 2
+            }
+            "Level 3" -> {
+                gameMode = 3
+            }
+        }
+
+        if(language == "Bengali") {
+            switchToBengali()
+            destLanguage = Locale("bn_IN")
+        }
+
+        binding.userName.text = userName
+        binding.level.text = gameMode.toString()
 
 //        val sharedPreferences = getSharedPreferences("NBackGamePrefs", Context.MODE_PRIVATE)
 //        val editor = sharedPreferences.edit()
@@ -78,24 +132,32 @@ class MainActivity : AppCompatActivity() {
 //        editor.apply()
 
         initUI()
+        Thread {
+            while (true) {
+                if(timeFromClick != 0 && Calendar.getInstance().timeInMillis.toInt() - timeFromClick > WAITING_TIME){
+                    timeFromClick = 0
+                    tts!!.stop()
+                }
+            }
+        }.start()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        backgroundMediaPlayer.release()
         tapMediaPlayer.release()
+        tts?.stop()
+        tts?.shutdown()
     }
 
     private fun takeInput(){
         touch = 0
         TOUCH_0_TIME = Calendar.getInstance().timeInMillis.toInt()
-        val date = Calendar.getInstance().time
         binding.touchView.setOnClickListener{
-            //paly touch sound
             tapMediaPlayer = MediaPlayer.create(this, R.raw.tap)
             tapMediaPlayer.setVolume(1f, 1f)
             tapMediaPlayer.start()
             touch +=1
+            timeFromClick = Calendar.getInstance().timeInMillis.toInt()
             when(touch) {
                 1 -> {
                     TOUCH_1_TIME = Calendar.getInstance().timeInMillis.toInt()
@@ -123,7 +185,10 @@ class MainActivity : AppCompatActivity() {
         tts = TextToSpeech(this@MainActivity) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 val result = tts?.setLanguage(destLanguage)
-                //change the reading speed of tts
+
+                val speechRate = 1f
+                tts?.setSpeechRate(speechRate)
+
                 if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                     Log.e(TAG, "The Language not supported!")
                 } else {
@@ -136,6 +201,11 @@ class MainActivity : AppCompatActivity() {
                             handleOnDoneUtterance(utteranceId)
                         }
 
+                        override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                            super.onStop(utteranceId, interrupted)
+                            handleOnStopUtterance(utteranceId, interrupted)
+                        }
+
                         @Deprecated("Deprecated in Java")
                         override fun onError(utteranceId: String) {
                             handleOnErrorUtterance(utteranceId)
@@ -143,8 +213,9 @@ class MainActivity : AppCompatActivity() {
                     })
 
                     if (allPermissionsGranted()) {
-                        playInstruction(INSTRUCTION_5, INSTRUCTION_5_ID)
                         Toast.makeText(this, "All permission are granted", Toast.LENGTH_SHORT).show()
+                        flow_Id = 32.generateRandomString()
+                        playInstruction(INSTRUCTION_LEVEL_1, INSTRUCTION_LEVEL_ID)
                     } else {
                         ActivityCompat.requestPermissions(
                             this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
@@ -159,18 +230,61 @@ class MainActivity : AppCompatActivity() {
         tts!!.speak(instructionText, TextToSpeech.QUEUE_FLUSH, null, instructionId)
     }
 
-    private fun generateRandomString(length: Int): String {
+    private fun Int.generateRandomString(): String {
         val allowedChars = ('a'..'z') + ('0'..'9')
-        return (1..length)
+        return (1..this)
             .map { allowedChars.random() }
             .joinToString("")
     }
+
+    private fun generateAndPlayRandomBeep(level: Int) {
+        when (level) {
+            2 -> {
+                val beepMediaPlayer = MediaPlayer.create(this, R.raw.beep)
+                beepMediaPlayer.setVolume(1f, 1f)
+
+                for (i in 1..noOfBeep) {
+                    beepMediaPlayer.start()
+                    val delayMillis = 1000L // 1 second
+                    Thread.sleep(delayMillis)
+                }
+                beepMediaPlayer.release()
+            }
+            3 -> {
+                val rand1 = (3..noOfBeep-2).random()
+                val rand2 = noOfBeep - rand1
+
+                var beepMediaPlayer = MediaPlayer.create(this, R.raw.beep)
+                beepMediaPlayer.setVolume(1f, 1f)
+                for (i in 1..rand1) {
+                    beepMediaPlayer.start()
+                    val delayMillis = 1000L // 1 second
+                    Thread.sleep(delayMillis)
+                    beepMediaPlayer.seekTo(0)
+                }
+                beepMediaPlayer.release()
+
+                beepMediaPlayer = MediaPlayer.create(this, R.raw.tic)
+                beepMediaPlayer.setVolume(1f, 1f)
+                for (i in 1..rand2) {
+                    beepMediaPlayer.start()
+                    val delayMillis = 1000L // 1 second
+                    Thread.sleep(delayMillis)
+                    beepMediaPlayer.seekTo(0)
+                }
+                beepMediaPlayer.release()
+            }
+        }
+    }
+
 
     private fun resetGame(){
         task_1_attempt = 1
         task_2_attempt = 1
         task_3_attempt = 1
         task_4_attempt = 1
+        questionFromBeep = false
+        noOfBeep = 0
         randomNumberList = mutableListOf<Int>()
     }
 
@@ -193,75 +307,104 @@ class MainActivity : AppCompatActivity() {
         return bengaliNumberList
     }
 
-    private fun playInstruction1() {
-        flow_Id = generateRandomString(32)
-        playInstruction(INSTRUCTION_1, INSTRUCTION_1_ID)
-    }
+//    private fun playInstruction1() {
+//        flow_Id = 32.generateRandomString()
+//        playInstruction(INSTRUCTION_1, INSTRUCTION_1_ID)
+//    }
 
     private fun playRandomNumbersList(randomNumberList: MutableList<Int>){
         if(changeLangMode){
-            tts?.setSpeechRate(0.7f)
             val randomList  = convertNumberListToBengali(randomNumberList)
             var randomNumberListText = ""
             for (i in randomList){
-                randomNumberListText += i + "    "
+                randomNumberListText += "$i    "
             }
             playInstruction(randomNumberListText, INSTRUCTION_RANDOM_NUMBER_LIST_ID)
         }
         else{
-            tts?.setSpeechRate(0.2f)
             var randomNumberListText = ""
             for (i in randomNumberList){
-                randomNumberListText += i.toString() + "  "
+                randomNumberListText += "$i  "
             }
             playInstruction(randomNumberListText, INSTRUCTION_RANDOM_NUMBER_LIST_ID)
         }
     }
 
-    private fun playSelectedGameLevel(level: Int){
-        when(level){
-            1 -> {
-                gameMode = 1
-                playInstruction(INSTRUCTION_LEVEL_1, INSTRUCTION_LEVEL_ID)
-            }
-            2 -> {
-                gameMode = 2
-                playInstruction(INSTRUCTION_LEVEL_2, INSTRUCTION_LEVEL_ID)
-            }
-            else -> {
-                gameMode = 3
-                playInstruction(INSTRUCTION_LEVEL_3, INSTRUCTION_LEVEL_ID)
-            }
-        }
-    }
+//    private fun playSelectedGameLevel(level: Int){
+//        when(level){
+//            1 -> {
+//                gameMode = 1
+//                playInstruction(INSTRUCTION_LEVEL_1, INSTRUCTION_LEVEL_ID)
+//            }
+//            2 -> {
+//                gameMode = 2
+//                playInstruction(INSTRUCTION_LEVEL_2, INSTRUCTION_LEVEL_ID)
+//            }
+//            else -> {
+//                gameMode = 3
+//                playInstruction(INSTRUCTION_LEVEL_3, INSTRUCTION_LEVEL_ID)
+//            }
+//        }
+//    }
 
     private fun generateRandomNumbers(mode: Int): MutableList<Int>{
         val randomList = mutableListOf<Int>()
-        val flNum = (1..9).random()
-        randomList.add(flNum)
         when(mode){
             1 -> {
-                for (i in 1..(1..2).random()) {
+                for (i in 1..(3..5).random()) {
                     val random = (1..9).random()
                     randomList.add(random)
                 }
+                randomList.add(randomList[0])
+                correctOutput = randomList.size - 2
             }
             2 -> {
-                for (i in 1..(3..4).random()) {
+                for (i in 1..(4..7).random()) {
                     val random = (1..9).random()
                     randomList.add(random)
                 }
+                randomList.add(randomList[0])
+                correctOutput = randomList.size - 2
+                noOfBeep = (3..5).random()
             }
             3 -> {
-                for (i in 1..(5..7).random()) {
+                for (i in 1..(5..9).random()) {
                     val random = (1..9).random()
                     randomList.add(random)
+                }
+                randomList.add(randomList[0])
+                noOfBeep = (5..9).random()
+                val rand = (0..1).random()
+                if (rand == 0){
+                    questionFromBeep = false
+                    correctOutput = randomList.size - 2
+                }
+                else{
+                    questionFromBeep = true
+                    correctOutput = noOfBeep
                 }
             }
         }
-        randomList.add(flNum)
         return randomList
     }
+
+//    private fun generateRandomNumbersSum(sum: Int): MutableList<Int> {
+//        val randomList = mutableListOf<Int>()
+//        val n = (2..4).random()
+//        var currentSum = 0
+//        for (i in 1 until n) {
+//            val remainingCount = n - randomList.size
+//            val remainingSum = sum - currentSum
+//            val random = if (remainingCount == 1) {
+//                remainingSum
+//            } else {
+//                (0 until remainingSum - remainingCount + 2).random()
+//            }
+//            randomList.add(random)
+//            currentSum += random
+//        }
+//        return randomList
+//    }
 
     private fun selectTouchTime(touch:Int): Int{
         when(touch){
@@ -387,106 +530,177 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startLangSelectionTask(){
-        takeInput()
-        Timer().schedule(delay = delay * 1000){
-            if(touch == 0){
-                playInstruction(INSTRUCTION_5, INSTRUCTION_5_ID)
-            }
-            else{
-                if(touch == 1){
-                    changeLangMode = true
-                    switchToBengali()
-                }
-                else if(touch==3){
-                    createExelSheet()
-                }
-                playInstruction1()
-            }
-        }
-    }
+    @OptIn(DelicateCoroutinesApi::class)
+//    private fun startLangSelectionTask(){
+//        var t = 0
+//        GlobalScope.launch {
+//            while (t < delay * 1000){
+//                if(timeFromClick != 0 && Calendar.getInstance().timeInMillis.toInt() - timeFromClick > WAITING_TIME){
+//                    break
+//                }
+//                t+=1000
+//                delay(1000)
+//            }
+//            if(touch == 0){
+//                playInstruction(INSTRUCTION_5, INSTRUCTION_5_ID)
+//            }
+//            else{
+//                if(touch == 1){
+//                    changeLangMode = true
+//                    switchToBengali()
+//                }
+//                else if(touch==3){
+//                    createExelSheet()
+//                }
+//                playInstruction1()
+//            }
+//        }
+//    }
 
     private fun startTask1(){
-        takeInput()
         Timer().schedule(delay = delay * 1000){
-            if(touch == 0) {
-                task_1_attempt++
-                playInstruction1()
-            }
-            else{
-                val date = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault()).format(Date())
-                val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                val task1 = Task(date,time, userName ,flow_Id, 1, task_1_attempt, -TOUCH_0_TIME,
-                    -selectTouchTime(touch), -TOUCH_0_TIME + selectTouchTime(touch), "null")
-
-                addTaskToSharedPref(task1)
-                playSelectedGameLevel(touch)
-            }
-        }
-    }
-
-    private fun startTask2(){
-        if(noOfGamePlayed == 0){
-            takeInput()
-            Timer().schedule(delay = delay * 1000){
-                if(touch == 0){
-                    playSelectedGameLevel(gameMode)
-                    task_2_attempt++
+            when (touch) {
+                0 -> {
+                    task_1_attempt++
+                    playInstruction(INSTRUCTION_LEVEL_1, INSTRUCTION_LEVEL_ID)
                 }
-                else{
+                4 -> {
+                    createExelSheet()
+                    playInstruction(INSTRUCTION_4, INSTRUCTION_4_ID)
+                }
+                else -> {
                     val date = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault()).format(Date())
                     val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                    val task2 = Task(date, time, userName ,flow_Id, 2, task_2_attempt, -TOUCH_0_TIME,
+                    val task1 = Task(date,time, userName ,flow_Id, 1, task_1_attempt, -TOUCH_0_TIME,
                         -selectTouchTime(touch), -TOUCH_0_TIME + selectTouchTime(touch), "null")
 
-                    addTaskToSharedPref(task2)
-
-                    if(touch == 1){
-                        randomNumberList = generateRandomNumbers(gameMode)
-                        correctOutput = randomNumberList.size - 2
-                        playRandomNumbersList(randomNumberList)
-                    }
-                    else{
-                        playInstruction(INSTRUCTION_4, INSTRUCTION_4_ID)
-                        finish()
-                    }
+                    addTaskToSharedPref(task1)
+                    randomNumberList = generateRandomNumbers(gameMode)
+                    playRandomNumbersList(randomNumberList)
                 }
             }
         }
-        else{
-            val date = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault()).format(Date())
-            val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            val task2 = Task(date, time, userName ,flow_Id, 2, task_2_attempt, -TOUCH_0_TIME,
-                -selectTouchTime(touch), -TOUCH_0_TIME + selectTouchTime(touch), "null")
-
-            addTaskToSharedPref(task2)
-
-            randomNumberList = generateRandomNumbers(gameMode)
-            correctOutput = randomNumberList.size - 2
-            playRandomNumbersList(randomNumberList)
-        }
     }
 
-    private fun startTask3(){
-        takeInput()
-        Timer().schedule(delay = delay * 1000 * (gameMode + 1)){
+//    @OptIn(DelicateCoroutinesApi::class)
+//    private fun startTask2(){
+//        if(noOfGamePlayed == 0){
+//            var t = 0
+//            GlobalScope.launch {
+//                while (t < delay * 1000){
+//                    if(timeFromClick != 0 && Calendar.getInstance().timeInMillis.toInt() - timeFromClick > WAITING_TIME){
+//                        break
+//                    }
+//                    t+=1000
+//                    delay(1000)
+//                }
+//                if(touch == 0){
+//                    playSelectedGameLevel(gameMode)
+//                    task_2_attempt++
+//                }
+//                else{
+//                    val date = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault()).format(Date())
+//                    val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+//                    val task2 = Task(date, time, userName ,flow_Id, 2, task_2_attempt, -TOUCH_0_TIME,
+//                        -selectTouchTime(touch), -TOUCH_0_TIME + selectTouchTime(touch), "null")
+//
+//                    addTaskToSharedPref(task2)
+//
+//                    if(touch == 1){
+//                        randomNumberList = generateRandomNumbers(gameMode)
+//                        Log.i("randomNumberList", gameMode.toString())
+//                        correctOutput = when (gameMode) {
+//                            1 -> {
+//                                randomNumberList.size - 2
+//                            }
+//                            2 -> {
+//                                Log.i("randomNumberList", randomNumberList.toString())
+//                                randomNumberList.sum() - randomNumberList[0] - randomNumberList.last()
+//                            }
+//                            else -> {
+//                                val rand = (0..1).random()
+//                                if (rand == 0){
+//                                    questionFromBeep = false
+//                                    startOf3 = (1..4).random()
+//                                    randomNumberList.size - 1 - startOf3
+//                                }
+//                                else{
+//                                    questionFromBeep = true
+//                                    noOfBeep
+//                                }
+//                            }
+//                        }
+//                        Log.i("correctOutput", correctOutput.toString())
+//                        playRandomNumbersList(randomNumberList)
+//                    }
+//                    else{
+//                        playInstruction(INSTRUCTION_4, INSTRUCTION_4_ID)
+//                        finish()
+//                    }
+//                }
+//            }
+//        }
+//        else{
+//            val date = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault()).format(Date())
+//            val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+//            val task2 = Task(date, time, userName ,flow_Id, 2, task_2_attempt, -TOUCH_0_TIME,
+//                -selectTouchTime(touch), -TOUCH_0_TIME + selectTouchTime(touch), "null")
+//
+//            addTaskToSharedPref(task2)
+//
+//            randomNumberList = generateRandomNumbers(gameMode)
+//            Log.i("randomNumberList", gameMode.toString())
+//            correctOutput = when (gameMode) {
+//                1 -> {
+//                    randomNumberList.size - 2
+//                }
+//                2 -> {
+//                    Log.i("randomNumberList", randomNumberList.toString())
+//                    randomNumberList.sum() - randomNumberList[0] - randomNumberList.last()
+//                }
+//                else -> {
+//                    val rand = (0..1).random()
+//                    if (rand == 0){
+//                        questionFromBeep = false
+//                        startOf3 = (1..4).random()
+//                        randomNumberList.size - 1 - startOf3
+//                    }
+//                    else{
+//                        questionFromBeep = true
+//                        noOfBeep
+//                    }
+//                }
+//            }
+//            Log.i("correctOutput", correctOutput.toString())
+//            playRandomNumbersList(randomNumberList)
+//        }
+//    }
+
+    @OptIn(DelicateCoroutinesApi::class)
+    private fun startTask2(){
+        var t = 0
+        GlobalScope.launch {
+            while (t < delay * 1000 * (gameMode + 1)){
+                if(timeFromClick != 0 && Calendar.getInstance().timeInMillis.toInt() - timeFromClick > WAITING_TIME){
+                    Log.i("tClick", timeFromClick.toString())
+                    break
+                }
+                t+=1000
+                delay(1000)
+            }
             if(touch == 0){
                 playRandomNumbersList(randomNumberList)
-                task_3_attempt++
+                task_2_attempt++
             }
             else{
                 val date = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault()).format(Date())
                 val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                val task3 = Task(date, time, userName ,flow_Id, 3, task_3_attempt, -TOUCH_0_TIME,
+                val task2 = Task(date, time, userName ,flow_Id, 3, task_3_attempt, -TOUCH_0_TIME,
                     -selectTouchTime(touch), -TOUCH_0_TIME + selectTouchTime(touch), if (touch == correctOutput) "correct" else "incorrect")
 
-                addTaskToSharedPref(task3)
+                addTaskToSharedPref(task2)
                 noOfGamePlayed++
-
-                INSTRUCTION_1 = __INSTRUCTION_1
-                INSTRUCTION_LEVEL_1 = __INSTRUCTION_LEVEL_1
-                INSTRUCTION_LEVEL_2 = __INSTRUCTION_LEVEL_2
-                INSTRUCTION_LEVEL_3 = __INSTRUCTION_LEVEL_3
+                resetGame()
 
                 if (touch == correctOutput){
                     successMediaPlayer = MediaPlayer.create(this@MainActivity, R.raw.win)
@@ -506,37 +720,44 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startTask4(){
-        takeInput()
-        Timer().schedule(delay = delay * 1000){
-            if(touch==0){
-                playInstruction(INSTRUCTION_6, INSTRUCTION_6_ID)
-                task_4_attempt++
-            }
-            else{
-                val date = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault()).format(Date())
-                val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                val task4 = Task(date,time, userName ,flow_Id, 4, task_4_attempt, -TOUCH_0_TIME, -selectTouchTime(touch), -TOUCH_0_TIME + selectTouchTime(touch), "null")
-                addTaskToSharedPref(task4)
-                if (touch == 1){
-                    resetGame()
-                    playInstruction1()
-                }
-                else{
-                    playInstruction(INSTRUCTION_4, INSTRUCTION_4_ID)
-                }
-            }
-        }
-    }
+//    @OptIn(DelicateCoroutinesApi::class)
+//    private fun startTask3(){
+//        var t = 0
+//        GlobalScope.launch {
+//            while (t < delay * 1000){
+//                if(timeFromClick != 0 && Calendar.getInstance().timeInMillis.toInt() - timeFromClick > WAITING_TIME){
+//                    break
+//                }
+//                t+=1000
+//                delay(1000)
+//            }
+//            if(touch==0){
+//                playInstruction(INSTRUCTION_6, INSTRUCTION_6_ID)
+//                task_3_attempt++
+//            }
+//            else{
+//                val date = SimpleDateFormat("dd-MM-yyyy", Locale.getDefault()).format(Date())
+//                val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+//                val task4 = Task(date,time, userName ,flow_Id, 4, task_4_attempt, -TOUCH_0_TIME, -selectTouchTime(touch), -TOUCH_0_TIME + selectTouchTime(touch), "null")
+//                addTaskToSharedPref(task4)
+//                when (touch) {
+//                    1 -> {
+//                        resetGame()
+//                        playInstruction(INSTRUCTION_LEVEL_1, INSTRUCTION_LEVEL_ID)
+//                    }
+//                    else -> {
+//                        playInstruction(INSTRUCTION_4, INSTRUCTION_4_ID)
+//                    }
+//                }
+//            }
+//        }
+//    }
 
     private fun handleOnStartUtterance(utteranceId: String) {
         Log.d(TAG, "TTS Started $utteranceId")
         when (utteranceId) {
-            INSTRUCTION_1_ID -> {
-
-            }
             INSTRUCTION_LEVEL_ID -> {
-
+                takeInput()
             }
             INSTRUCTION_RANDOM_NUMBER_LIST_ID -> {
 
@@ -544,14 +765,11 @@ class MainActivity : AppCompatActivity() {
             INSTRUCTION_SF_ID -> {
 
             }
-            INSTRUCTION_5_ID -> {
-
-            }
-            _INSTRUCTION_5_ID -> {
-
-            }
             INSTRUCTION_6_ID -> {
-
+                takeInput()
+            }
+            INSTRUCTION_7_ID -> {
+                takeInput()
             }
             else -> {
                 // Do nothing if Instruction ID don't match
@@ -560,17 +778,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleOnDoneUtterance(utteranceId: String) {
-        Log.d(TAG, "TTS Done $utteranceId")
         when (utteranceId) {
-            INSTRUCTION_1_ID -> {
+            INSTRUCTION_LEVEL_ID -> {
                 startTask1()
             }
-            INSTRUCTION_LEVEL_ID -> {
-                startTask2()
-            }
             INSTRUCTION_RANDOM_NUMBER_LIST_ID -> {
-                tts?.setSpeechRate(1f)
-                playInstruction(INSTRUCTION_7, INSTRUCTION_7_ID)
+                generateAndPlayRandomBeep(gameMode)
+                if(gameMode == 3 && questionFromBeep){
+                    playInstruction(INSTRUCTION_10, INSTRUCTION_7_ID)
+                }
+                else{
+                    playInstruction(INSTRUCTION_7, INSTRUCTION_7_ID)
+                }
             }
             INSTRUCTION_SF_ID -> {
                 playInstruction(INSTRUCTION_6, INSTRUCTION_6_ID)
@@ -578,19 +797,43 @@ class MainActivity : AppCompatActivity() {
             INSTRUCTION_4_ID -> {
                 finish()
             }
-            INSTRUCTION_5_ID -> {
-                changeLangMode = true
-                playInstruction(_INSTRUCTION_5, _INSTRUCTION_5_ID)
-            }
-            _INSTRUCTION_5_ID -> {
-                changeLangMode = false
-                startLangSelectionTask()
-            }
             INSTRUCTION_6_ID -> {
-                startTask4()
+                startTask1()
             }
             INSTRUCTION_7_ID -> {
-                startTask3()
+                startTask2()
+            }
+            else -> {
+                // Do nothing if Instruction ID don't match
+            }
+        }
+    }
+
+    private fun handleOnStopUtterance(utteranceId: String?, interrupted: Boolean) {
+        when (utteranceId) {
+            INSTRUCTION_LEVEL_ID -> {
+                startTask1()
+            }
+            INSTRUCTION_RANDOM_NUMBER_LIST_ID -> {
+                generateAndPlayRandomBeep(gameMode)
+                if(gameMode == 3 && questionFromBeep){
+                    playInstruction(INSTRUCTION_10, INSTRUCTION_7_ID)
+                }
+                else{
+                    playInstruction(INSTRUCTION_7, INSTRUCTION_7_ID)
+                }
+            }
+            INSTRUCTION_SF_ID -> {
+                playInstruction(INSTRUCTION_6, INSTRUCTION_6_ID)
+            }
+            INSTRUCTION_4_ID -> {
+                finish()
+            }
+            INSTRUCTION_6_ID -> {
+                startTask1()
+            }
+            INSTRUCTION_7_ID -> {
+                startTask2()
             }
             else -> {
                 // Do nothing if Instruction ID don't match
@@ -599,11 +842,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleOnErrorUtterance(utteranceId: String) {
-        Log.d(TAG, "TTS Error $utteranceId")
         when (utteranceId) {
-            INSTRUCTION_1_ID -> {
-
-            }
             INSTRUCTION_LEVEL_ID -> {
 
             }
@@ -611,12 +850,6 @@ class MainActivity : AppCompatActivity() {
 
             }
             INSTRUCTION_SF_ID -> {
-
-            }
-            INSTRUCTION_5_ID -> {
-
-            }
-            _INSTRUCTION_5_ID -> {
 
             }
             INSTRUCTION_6_ID -> {
@@ -634,6 +867,7 @@ class MainActivity : AppCompatActivity() {
         ) == PackageManager.PERMISSION_GRANTED
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     override fun onRequestPermissionsResult(
         requestCode: Int, permissions: Array<String>, grantResults:
         IntArray
@@ -652,32 +886,39 @@ class MainActivity : AppCompatActivity() {
                     "Permissions not granted by the user.",
                     Toast.LENGTH_SHORT
                 ).show()
-                requestPermissions(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE), 1)
+                ActivityCompat.requestPermissions(
+                    this, arrayOf(
+                        Manifest.permission.RECORD_AUDIO,
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                        Manifest.permission.READ_EXTERNAL_STORAGE
+                    ),
+                    108
+                )
             }
         }
     }
 
     private fun switchToBengali(){
-        tts?.language = Locale.forLanguageTag("bn_IN")
-        destLanguage = Locale.forLanguageTag("bn_In")
-        INSTRUCTION_1 = _INSTRUCTION_1
         INSTRUCTION_LEVEL_1 = _INSTRUCTION_LEVEL_1
-        INSTRUCTION_LEVEL_2 = _INSTRUCTION_LEVEL_2
-        INSTRUCTION_LEVEL_3 = _INSTRUCTION_LEVEL_3
         INSTRUCTION_2 = _INSTRUCTION_2
         INSTRUCTION_3 = _INSTRUCTION_3
         INSTRUCTION_4 = _INSTRUCTION_4
-        INSTRUCTION_5 = _INSTRUCTION_5
         INSTRUCTION_6 = _INSTRUCTION_6
         INSTRUCTION_7 = _INSTRUCTION_7
-        __INSTRUCTION_1 = ___INSTRUCTION_1
-        __INSTRUCTION_LEVEL_1 = ___INSTRUCTION_LEVEL_1
-        __INSTRUCTION_LEVEL_2 = ___INSTRUCTION_LEVEL_2
-        __INSTRUCTION_LEVEL_3 = ___INSTRUCTION_LEVEL_3
+        INSTRUCTION_10 = _INSTRUCTION_10
+        and = _and
+        first = _first
+        second = _second
+        third = _third
+        fourth = _fourth
+        fifth = _fifth
+        sixth = _sixth
+        seventh = _seventh
+        eighth = _eighth
+        ninth = _ninth
     }
 
     companion object {
-        private const val TAG = "BlindAssistant"
         private const val REQUEST_CODE_PERMISSIONS = 10
         private val REQUIRED_PERMISSIONS =
             mutableListOf(
